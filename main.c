@@ -303,7 +303,7 @@ int main(int argc, char **argv) {
 	GOptionContext* context = g_option_context_new("");
 	g_option_context_add_main_entries(context, options, NULL);
 	g_option_context_parse(context, &argc, &argv, &error);
-	GtkApplication* app = gtk_application_new("org.gsimplemixer", G_APPLICATION_DEFAULT_FLAGS);
+	GtkApplication* app = gtk_application_new("org.gsimplemixer", G_APPLICATION_NON_UNIQUE);
 	Mixer* mixer = g_new0(Mixer, 1);
 	g_signal_connect(app, "activate", G_CALLBACK(activate), mixer);
 	int status = g_application_run(G_APPLICATION(app), argc, argv);
