@@ -1,5 +1,5 @@
 /*
-gsimplemixer: a simple GTK mixer
+wsimplemixer: a simple GTK mixer
 Copyright (C) 2025 Fuzzy Dunlop
 
 This program is free software: you can redistribute it and/or modify
@@ -16,21 +16,19 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-#include <stdio.h>
-#include <pulse/pulseaudio.h>
-#include <pulse/glib-mainloop.h>
 #include <gtk/gtk.h>
 #include <gtk4-layer-shell/gtk4-layer-shell.h>
-#include <glib-2.0/glib-unix.h>
+#include <pulse/pulseaudio.h>
+#include <pulse/glib-mainloop.h>
 
 #define SPACING 4
 
 static gboolean no_layer_shell = FALSE;
-static gboolean start_hidden = FALSE;
 static GtkLayerShellLayer default_layer = GTK_LAYER_SHELL_LAYER_TOP;
 static gboolean default_anchors[] = {FALSE, TRUE, FALSE, TRUE};
 
 typedef struct {
+	GtkWidget* window;
 	GtkWidget* container;
 	GList* items;
 } Mixer;
@@ -55,7 +53,7 @@ static MixerItem* new_mixer_item(pa_context *c, uint32_t index, const char *icon
 	gtk_widget_set_valign(mixer_item->button, GTK_ALIGN_CENTER);
 	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(mixer_item->button), muted);
 
-	mixer_item->slider = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 150.0, 0.5); /* page = 10 * step */
+	mixer_item->slider = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 150.0, 0.5); /* 1 page = 10 steps */
 	gtk_widget_set_hexpand(mixer_item->slider, TRUE);
 	gtk_range_set_value(GTK_RANGE(mixer_item->slider), volume);
 
@@ -241,35 +239,39 @@ static gboolean toggle_visible(GtkWidget *widget) {
 
 static void activate(GtkApplication *app, gpointer user_data) {
 	Mixer* mixer = user_data;
+	if (mixer->window == NULL) {
+		mixer->window = gtk_application_window_new(app);
+		gtk_window_set_title(GTK_WINDOW(mixer->window), "Volume Control");
+		gtk_window_set_default_size(GTK_WINDOW(mixer->window), 250, 0);
+		gtk_window_set_resizable(GTK_WINDOW(mixer->window), false);
+		gtk_widget_add_css_class(mixer->window, "frame");
 
-	GtkWidget* window = gtk_application_window_new(app);
-	gtk_window_set_title(GTK_WINDOW(window), "Volume Control");
-	gtk_window_set_default_size(GTK_WINDOW(window), 250, 0);
-	gtk_window_set_resizable(GTK_WINDOW(window), false);
+		if (!no_layer_shell) {
+			gtk_layer_init_for_window(GTK_WINDOW(mixer->window));
+			gtk_layer_set_layer(GTK_WINDOW(mixer->window), default_layer);
+			for (int i = 0; i < GTK_LAYER_SHELL_EDGE_ENTRY_NUMBER; i++)
+				gtk_layer_set_anchor(GTK_WINDOW(mixer->window), i, default_anchors[i]);
+		}
 
-	if (!no_layer_shell) {
-		gtk_layer_init_for_window(GTK_WINDOW(window));
-		gtk_layer_set_layer(GTK_WINDOW(window), default_layer);
-		for (int i = 0; i < GTK_LAYER_SHELL_EDGE_ENTRY_NUMBER; i++)
-			gtk_layer_set_anchor(GTK_WINDOW(window), i, default_anchors[i]);
-		g_unix_signal_add(SIGUSR1, G_SOURCE_FUNC(toggle_visible), window);
+		mixer->container = gtk_box_new(GTK_ORIENTATION_VERTICAL, SPACING);
+		gtk_widget_set_margin_bottom(mixer->container, SPACING);
+		gtk_widget_set_margin_top(mixer->container, SPACING);
+		gtk_widget_set_margin_start(mixer->container, SPACING);
+		gtk_widget_set_margin_end(mixer->container, SPACING);
+		gtk_window_set_child(GTK_WINDOW(mixer->window), mixer->container);
+
+		pa_glib_mainloop* mainloop = pa_glib_mainloop_new(g_main_context_default());
+		pa_mainloop_api* api = pa_glib_mainloop_get_api(mainloop);
+		pa_context* context = pa_context_new(api, NULL);
+		pa_context_set_state_callback(context, context_state_callback, mixer);
+		pa_context_connect(context, NULL, PA_CONTEXT_NOFAIL, NULL);
+
+		gtk_window_present(GTK_WINDOW(mixer->window));
+	} else if (no_layer_shell) {
+		gtk_window_present(GTK_WINDOW(mixer->window));
+	} else {
+		toggle_visible(mixer->window);
 	}
-
-	mixer->container = gtk_box_new(GTK_ORIENTATION_VERTICAL, SPACING);
-	gtk_widget_set_margin_bottom(mixer->container, SPACING);
-	gtk_widget_set_margin_top(mixer->container, SPACING);
-	gtk_widget_set_margin_start(mixer->container, SPACING);
-	gtk_widget_set_margin_end(mixer->container, SPACING);
-	gtk_window_set_child(GTK_WINDOW(window), mixer->container);
-
-	pa_glib_mainloop* mainloop = pa_glib_mainloop_new(g_main_context_default());
-	pa_mainloop_api* api = pa_glib_mainloop_get_api(mainloop);
-	pa_context* context = pa_context_new(api, NULL);
-	pa_context_set_state_callback(context, context_state_callback, mixer);
-	pa_context_connect(context, NULL, PA_CONTEXT_NOFAIL, NULL);
-
-	gtk_window_present(GTK_WINDOW(window));
-	if (!no_layer_shell && start_hidden) gtk_widget_set_visible(window, FALSE);
 }
 
 gboolean anchor_option_callback(const gchar* _option_name, const gchar* value, void* _data, GError **error) {
@@ -294,7 +296,6 @@ gboolean anchor_option_callback(const gchar* _option_name, const gchar* value, v
 static const GOptionEntry options[] = {
 	{"anchor", 'a', G_OPTION_FLAG_OPTIONAL_ARG, G_OPTION_ARG_CALLBACK, (void*)&anchor_option_callback, "A sequence of 'l', 'r', 't' and 'b' to anchor to those edges", NULL},
 	{"no-layer-shell", 'n', G_OPTION_FLAG_NONE, G_OPTION_ARG_NONE, &no_layer_shell, "Disable gtk4-layer-shell, create a normal shell surface instead", NULL},
-	{"start-hidden", 'h', G_OPTION_FLAG_NONE, G_OPTION_ARG_NONE, &start_hidden, "", NULL},
 	G_OPTION_ENTRY_NULL
 };
 
@@ -303,7 +304,7 @@ int main(int argc, char **argv) {
 	GOptionContext* context = g_option_context_new("");
 	g_option_context_add_main_entries(context, options, NULL);
 	g_option_context_parse(context, &argc, &argv, &error);
-	GtkApplication* app = gtk_application_new("org.gsimplemixer", G_APPLICATION_NON_UNIQUE);
+	GtkApplication* app = gtk_application_new("org.wsimplemixer", G_APPLICATION_DEFAULT_FLAGS);
 	Mixer* mixer = g_new0(Mixer, 1);
 	g_signal_connect(app, "activate", G_CALLBACK(activate), mixer);
 	int status = g_application_run(G_APPLICATION(app), argc, argv);
